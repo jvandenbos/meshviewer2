@@ -1,0 +1,10 @@
+fastapi==0.111.0
+uvicorn[standard]==0.30.1
+websockets==12.0
+meshtastic==2.3.10
+pubsub==0.1.2
+pydantic==2.10.4
+python-multipart==0.0.9
+aiosqlite==0.20.0
+python-dateutil==2.9.0
+typing-extensions==4.12.2

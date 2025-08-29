@@ -111,6 +111,15 @@ Frontend can send:
 - Current implementation filters standalone nodes
 - TODO: Add isolated node rendering support
 
+### Signal Strength Not Showing
+- Meshtastic packets use `rxRssi`/`rxSnr` fields, not `rssi`/`snr`
+- Solution: Updated field extraction in `meshtastic_connector.py` lines 163-164
+
+### Incorrect Hop Count Display
+- Was calculating `hopLimit - hopStart` (backwards)
+- Solution: Corrected to `hopStart - hopLimit` in `meshtastic_connector.py` line 157
+- When hopStart is 0, no hop info available (use None/999 for unknown)
+
 ## Database Schema
 
 Key tables:
@@ -134,14 +143,36 @@ Indexes optimized for:
 - Graph rendering: 60 FPS with 50+ nodes
 - Database queries: <100ms for dashboard views
 
+## Recent Improvements (2025-08-29)
+
+### Fixed Issues
+1. **Hop Count Calculation**: Corrected formula from `hopLimit - hopStart` to `hopStart - hopLimit`
+2. **RSSI/SNR Data**: Fixed field names to use `rxRssi`/`rxSnr` from Meshtastic packets
+3. **LOCAL Badge**: Now only shows on actual local node (by ID match, not hop count)
+4. **Node Sorting**: Proper hierarchy: Local → Direct (1 hop) → Multi-hop (ascending)
+5. **Signal Visualization**: Added SignalStrengthGauge component with colored bars
+
+### New Components
+- **Legend.tsx**: Visual guide showing node types, signal quality, hop distances
+- **SignalStrengthGauge.tsx**: Visual signal strength bars with RSSI values
+
+### Visual Enhancements
+- Dynamic node sizing based on hop count (local=25px, direct=20px, 2hop=16px, 3+=12px)
+- Router nodes shown as purple diamonds
+- Local node shown with green border
+- Signal quality color coding (green/yellow/orange/red)
+
 ## Testing Checklist
 
 When making changes, verify:
 1. WebSocket connects and stays connected
 2. Nodes appear in sidebar when discovered
-3. Battery/signal indicators update correctly
-4. Session reset clears UI but preserves database
-5. Graph doesn't error on broadcast messages
-6. Tailwind styles load (dark theme visible)
-7. Event ticker shows activity
-8. Connect/Disconnect buttons work
+3. Signal strength bars show for nodes with RSSI data
+4. Hop count badges display correctly (LOCAL/DIRECT/X HOPS)
+5. Battery/signal indicators update correctly
+6. Session reset clears UI but preserves database
+7. Graph doesn't error on broadcast messages
+8. Tailwind styles load (dark theme visible)
+9. Event ticker shows activity
+10. Connect/Disconnect buttons work
+11. Legend displays properly in bottom-left corner

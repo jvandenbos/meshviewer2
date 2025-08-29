@@ -41,15 +41,21 @@ function App() {
       });
 
       websocketService.on('initial_state', (data: any) => {
+        console.log('Received initial_state with', data.nodes?.length || 0, 'nodes');
         if (data.session) setSession(data.session);
-        if (data.nodes) setNodes(data.nodes);
+        if (data.nodes) {
+          console.log('Setting nodes:', data.nodes);
+          setNodes(data.nodes);
+        }
         if (data.messages) setMessages(data.messages);
         if (data.links) setLinks(data.links);
       });
 
       websocketService.on('node_info', (data: any) => {
-        updateNode(data.node);
-        addEvent('node_discovered', `Node discovered: ${data.node.short_name}`);
+        console.log('Received node_info:', data);
+        const nodeData = data.node || data;
+        updateNode(nodeData);
+        addEvent('node_discovered', `Node discovered: ${nodeData.short_name || nodeData.id}`);
       });
 
       websocketService.on('text_message', (data: TextMessage) => {
@@ -220,6 +226,7 @@ function App() {
           nodes={nodes}
           selectedNodeId={selectedNodeId}
           onNodeSelect={handleNodeSelect}
+          localNodeId="1109198442"
         />
       </div>
       

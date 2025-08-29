@@ -3,6 +3,7 @@ import CytoscapeComponent from 'react-cytoscapejs';
 import cytoscape from 'cytoscape';
 import coseBilkent from 'cytoscape-cose-bilkent';
 import { NodeInfo, NetworkLink } from '../types';
+import Legend from './Legend';
 
 // Register the force-directed layout
 cytoscape.use(coseBilkent);
@@ -33,8 +34,11 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({
       },
       classes: [
         node.signal_quality || 'unknown',
-        node.is_online ? 'online' : 'offline'
-      ].join(' ')
+        node.is_online ? 'online' : 'offline',
+        // Add role-based classes
+        node.role?.includes('ROUTER') ? 'router' : '',
+        node.hop_count === 0 ? 'local' : ''
+      ].filter(c => c).join(' ')
     }));
 
     // Create a set of valid node IDs for quick lookup
@@ -67,13 +71,26 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({
         'label': 'data(label)',
         'text-valign': 'bottom',
         'text-halign': 'center',
-        'font-size': '12px',
+        'font-size': '10px',
         'color': '#ffffff',
-        'width': 40,
-        'height': 40,
-        'border-width': 2,
+        // Dynamic sizing based on hop count (closer = larger)
+        'width': (ele: any) => {
+          const hopCount = ele.data('hop_count');
+          if (hopCount === 0) return 25; // Local node
+          if (hopCount === 1) return 20; // Direct connections
+          if (hopCount === 2) return 16; // 2 hops
+          return 12; // 3+ hops
+        },
+        'height': (ele: any) => {
+          const hopCount = ele.data('hop_count');
+          if (hopCount === 0) return 25; // Local node
+          if (hopCount === 1) return 20; // Direct connections
+          if (hopCount === 2) return 16; // 2 hops
+          return 12; // 3+ hops
+        },
+        'border-width': 1,
         'border-color': '#0891b2',
-        'text-margin-y': 5
+        'text-margin-y': 3
       }
     },
     {
@@ -109,6 +126,21 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({
       style: {
         'opacity': 0.5,
         'background-color': '#6b7280'
+      }
+    },
+    {
+      selector: 'node.router',
+      style: {
+        'shape': 'diamond',  // Routers get diamond shape
+        'background-color': '#8b5cf6'  // Purple for routers
+      }
+    },
+    {
+      selector: 'node.local',
+      style: {
+        'border-width': 3,
+        'border-color': '#10b981',  // Green border for local node
+        'background-color': '#10b981'
       }
     },
     {
@@ -193,7 +225,7 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({
     };
   }, [onNodeClick, onNodeHover]);
 
-  // Animate new nodes
+  // Animate new nodes and refit layout when nodes change
   useEffect(() => {
     if (!cyRef.current) return;
 
@@ -203,48 +235,57 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({
     cy.nodes().forEach((node) => {
       if (!node.data('animated')) {
         node.data('animated', true);
+        const hopCount = node.data('hop_count');
+        let baseSize = 12;
+        if (hopCount === 0) baseSize = 25;
+        else if (hopCount === 1) baseSize = 20;
+        else if (hopCount === 2) baseSize = 16;
+        
         node.animate({
           style: {
-            'width': 60,
-            'height': 60
+            'width': baseSize * 1.5,
+            'height': baseSize * 1.5
           },
           duration: 300
         }).animate({
           style: {
-            'width': 40,
-            'height': 40
+            'width': baseSize,
+            'height': baseSize
           },
           duration: 300
         });
       }
     });
-  }, [nodes]);
+    
+    // Run layout if we have nodes
+    if (nodes.length > 0) {
+      cy.layout({
+        name: 'cose-bilkent',
+        animate: true,
+        animationDuration: 500,
+        fit: true,
+        padding: 50,
+        nodeRepulsion: 8000,
+        idealEdgeLength: 100,
+        edgeElasticity: 0.45,
+        nestingFactor: 0.1,
+        gravity: 0.25,
+        numIter: 2500,
+        randomize: false,
+        tile: true
+      }).run();
+    }
+  }, [nodes.length, links.length]);
 
   return (
-    <div className="w-full h-full bg-gray-900 rounded-lg">
+    <div className="w-full h-full bg-gray-900 rounded-lg relative">
       <CytoscapeComponent
         elements={elements}
         style={{ width: '100%', height: '100%' }}
         stylesheet={stylesheet}
         cy={(cy) => { cyRef.current = cy; }}
         layout={{
-          name: 'cose-bilkent',
-          animate: true,
-          animationDuration: 500,
-          fit: true,
-          padding: 30,
-          nodeRepulsion: 8000,
-          idealEdgeLength: 100,
-          edgeElasticity: 0.45,
-          nestingFactor: 0.1,
-          gravity: 0.25,
-          numIter: 2500,
-          tile: true,
-          tilingPaddingVertical: 10,
-          tilingPaddingHorizontal: 10,
-          gravityRangeCompound: 1.5,
-          gravityCompound: 1.0,
-          gravityRange: 3.8
+          name: 'preset'
         }}
         pan={{ x: 0, y: 0 }}
         zoom={1}
@@ -252,6 +293,7 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({
         maxZoom={3}
         wheelSensitivity={0.2}
       />
+      <Legend />
     </div>
   );
 };

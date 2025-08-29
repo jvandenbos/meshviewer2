@@ -9,6 +9,7 @@ class NodeRole(str, Enum):
     REPEATER = "REPEATER"
     CLIENT_MUTE = "CLIENT_MUTE"
     ROUTER_CLIENT = "ROUTER_CLIENT"
+    TRACKER = "TRACKER"  # New role type
 
 class SignalQuality(str, Enum):
     EXCELLENT = "excellent"  # >-75dBm

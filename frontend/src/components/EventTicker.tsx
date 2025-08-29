@@ -90,7 +90,7 @@ const EventTicker: React.FC<EventTickerProps> = ({ events, maxEvents = 100 }) =>
         )}
       </div>
       
-      <style jsx>{`
+      <style>{`
         .scrollbar-hide {
           -ms-overflow-style: none;
           scrollbar-width: none;

@@ -56,6 +56,32 @@ class MeshtasticConnector:
         if hasattr(interface, 'myInfo') and interface.myInfo:
             self.local_node_id = str(interface.myInfo.my_node_num)
             logger.info(f"Local node ID: {self.local_node_id}")
+            
+            # Create entry for local node
+            self.node_db[self.local_node_id] = {
+                "id": self.local_node_id,
+                "short_name": interface.myInfo.user.shortName if hasattr(interface.myInfo, 'user') else "My Node",
+                "long_name": interface.myInfo.user.longName if hasattr(interface.myInfo, 'user') else "Local Meshtastic Node",
+                "hardware_model": str(interface.myInfo.user.hwModel) if hasattr(interface.myInfo, 'user') else "Local Device",
+                "role": "CLIENT",
+                "hop_count": 0,  # Local node is always 0 hops
+                "is_local": True
+            }
+            
+            # Send local node info to backend
+            if self.on_data_callback:
+                local_node_data = {
+                    "type": "node_info",
+                    "node": self.node_db[self.local_node_id],
+                    "hop_count": 0,
+                    "timestamp": datetime.now()
+                }
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        asyncio.create_task(self.on_data_callback(local_node_data))
+                except RuntimeError:
+                    asyncio.run(self.on_data_callback(local_node_data))
         
         # Request initial data
         if self.interface:
@@ -77,10 +103,21 @@ class MeshtasticConnector:
         start_time = time.time()
         
         try:
-            # Extract packet data
+            # Extract packet data - handle different packet structures
             packet_dict = packet.get('decoded', packet)
-            from_id = str(packet.get('fromId', packet.get('from', '')))
-            to_id_raw = packet.get('toId', packet.get('to', ''))
+            
+            # Try different fields for from_id
+            from_id = packet.get('fromId') or packet.get('from')
+            if not from_id and 'fromId' in str(packet):
+                # Sometimes it's in the string representation
+                from_id = self.local_node_id
+            from_id = str(from_id) if from_id else self.local_node_id
+            
+            # Try different fields for to_id
+            to_id_raw = packet.get('toId') or packet.get('to') or '^all'
+            
+            # Log raw packet info
+            logger.info(f"📡 Packet from {from_id[:8] if from_id else 'Unknown'} to {to_id_raw[:8] if isinstance(to_id_raw, str) else to_id_raw}")
             # Handle special broadcast IDs
             if to_id_raw == '^all' or str(to_id_raw) == '4294967295':
                 to_id = 'broadcast'
@@ -91,23 +128,43 @@ class MeshtasticConnector:
             data = None
             packet_type = packet_dict.get('portnum', 'UNKNOWN')
             
+            # Log with correct hop calculation
+            hop_count_log = (packet.get('hopStart', 0) - packet.get('hopLimit', 0)) if packet.get('hopStart', 0) > 0 else 0
+            rssi_log = packet.get('rxRssi') or packet.get('rx_rssi')
+            snr_log = packet.get('rxSnr') or packet.get('rx_snr')
+            logger.info(f"   Type: {packet_type}, RSSI: {rssi_log}, SNR: {snr_log}, Hops: {hop_count_log}")
+            
             if packet_type == 'TEXT_MESSAGE_APP':
                 data = self.process_text_message(packet_dict, from_id, to_id)
             elif packet_type == 'POSITION_APP':
+                logger.info(f"   📍 Position update from {from_id[:8]}")
                 data = self.process_position(packet_dict, from_id)
             elif packet_type == 'NODEINFO_APP':
+                logger.info(f"   👤 Node info from {from_id[:8]}")
                 data = self.process_node_info(packet_dict, from_id)
             elif packet_type == 'TELEMETRY_APP':
+                logger.info(f"   📊 Telemetry from {from_id[:8]}")
                 data = self.process_telemetry(packet_dict, from_id)
             else:
                 data = self.process_generic_packet(packet_dict, from_id, to_id)
             
             # Add common packet info
             if data:
+                # Calculate hop count correctly: hopStart - hopLimit
+                # hopStart is the initial value (e.g., 3), hopLimit decreases with each hop
+                hop_start = packet.get('hopStart', 0)
+                hop_limit = packet.get('hopLimit', 0)
+                # Only calculate if we have hop information, otherwise use None
+                if hop_start > 0:
+                    hop_count = hop_start - hop_limit
+                else:
+                    # No hop information available - could be direct connection or unknown
+                    hop_count = None
+                
                 data.update({
-                    "rssi": packet.get('rssi'),
-                    "snr": packet.get('snr'),
-                    "hop_count": packet.get('hopLimit', 0) - packet.get('hopStart', 0),
+                    "rssi": packet.get('rxRssi') or packet.get('rx_rssi'),  # Try both camelCase and snake_case
+                    "snr": packet.get('rxSnr') or packet.get('rx_snr'),
+                    "hop_count": hop_count,
                     "channel": packet.get('channel', 0)
                 })
                 
@@ -117,6 +174,7 @@ class MeshtasticConnector:
                 
                 # Send to callback
                 if self.on_data_callback:
+                    logger.info(f"   ✅ Sending {data['type']} to backend for node {data.get('node_id', data.get('node', {}).get('id', 'unknown'))}")
                     try:
                         loop = asyncio.get_event_loop()
                         if loop.is_running():
@@ -182,14 +240,36 @@ class MeshtasticConnector:
         if from_id not in self.node_db:
             self.node_db[from_id] = {}
         
+        # Handle hardware model - convert int to string if needed
+        hw_model = user.get('hwModel', 'UNSET')
+        if isinstance(hw_model, int):
+            # Convert hardware model ID to string
+            hw_model = str(hw_model)
+        
+        # Handle role - convert int to string if needed
+        role = user.get('role', 'CLIENT')
+        if isinstance(role, int):
+            # Map role numbers to role names (based on Meshtastic protobuf)
+            role_map = {
+                0: 'CLIENT',
+                1: 'CLIENT_MUTE', 
+                2: 'ROUTER',
+                3: 'ROUTER_CLIENT',
+                4: 'REPEATER',
+                11: 'TRACKER'  # New role type
+            }
+            role = role_map.get(role, 'CLIENT')
+        
         self.node_db[from_id].update({
             "id": from_id,
             "short_name": user.get('shortName', f"Node-{from_id}"),
             "long_name": user.get('longName', ''),
-            "hardware_model": user.get('hwModel', 'UNSET'),
-            "role": user.get('role', 'CLIENT'),
+            "hardware_model": hw_model,
+            "role": role,
             "is_licensed": user.get('isLicensed', False)
         })
+        
+        logger.info(f"      Node DB updated: {from_id[:8]} = {user.get('shortName', 'Unknown')}, role={role}, hw={hw_model}")
         
         return {
             "type": "node_info",
@@ -215,6 +295,8 @@ class MeshtasticConnector:
             "air_util_tx": device_metrics.get('airUtilTx'),
             "uptime_seconds": device_metrics.get('uptimeSeconds')
         })
+        
+        logger.info(f"      Telemetry updated: {from_id[:8]} battery={device_metrics.get('batteryLevel')}%, voltage={device_metrics.get('voltage')}V")
         
         # Environment metrics
         env_metrics = telemetry.get('environmentMetrics', {})
@@ -263,7 +345,7 @@ class MeshtasticConnector:
             "to_id": to_id if to_id not in ["4294967295", "^all"] else str(self.local_node_id) if self.local_node_id else "broadcast",  # Broadcast handling
             "rssi": packet_data.get("rssi"),
             "snr": packet_data.get("snr"),
-            "is_direct": packet_data.get("hop_count", 0) == 0,
+            "is_direct": packet_data.get("hop_count") == 1,  # Direct connections are 1 hop
             "timestamp": datetime.now()
         }
         

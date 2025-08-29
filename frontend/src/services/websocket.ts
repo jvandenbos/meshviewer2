@@ -28,6 +28,10 @@ class WebSocketService {
         this.ws.onmessage = (event) => {
           try {
             const message = JSON.parse(event.data) as WebSocketMessage;
+            console.log('WebSocket received message type:', message.type);
+            if (message.type === 'initial_state') {
+              console.log('Initial state data:', message.data);
+            }
             this.handleMessage(message);
           } catch (error) {
             console.error('Failed to parse message:', error);

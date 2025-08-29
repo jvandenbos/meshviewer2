@@ -77,6 +77,8 @@ async def shutdown_event():
 async def process_meshtastic_data(data: Dict[str, Any]):
     """Process data from Meshtastic device and update all connected clients"""
     try:
+        logger.info(f"📥 Backend processing: {data['type']} for {data.get('node_id', data.get('node', {}).get('id', 'unknown'))}")
+        
         # Process based on data type
         if data["type"] == "node_info":
             await handle_node_info(data)
@@ -92,11 +94,14 @@ async def process_meshtastic_data(data: Dict[str, Any]):
             await handle_mesh_packet(data)
         
         # Broadcast to all WebSocket clients
+        # Clean data for JSON serialization
+        clean_data = json.loads(json.dumps(data, default=str))
         message = WebSocketMessage(
             type=data["type"],
-            data=data,
+            data=clean_data,
             timestamp=datetime.now()
         )
+        logger.info(f"   📡 Broadcasting {data['type']} to {len(state.websocket_clients)} WebSocket clients")
         await broadcast_to_clients(message.dict())
         
     except Exception as e:
@@ -105,6 +110,21 @@ async def process_meshtastic_data(data: Dict[str, Any]):
 async def handle_node_info(data: Dict):
     """Handle node information update"""
     node_data = data["node"]
+    logger.info(f"   Processing node_info: {node_data['id'][:8]} = {node_data.get('short_name', 'Unknown')}")
+    
+    # Calculate signal quality based on RSSI
+    rssi = data.get("rssi")
+    signal_quality = None
+    if rssi:
+        if rssi > -75:
+            signal_quality = "excellent"
+        elif rssi > -85:
+            signal_quality = "good"
+        elif rssi > -95:
+            signal_quality = "weak"
+        else:
+            signal_quality = "poor"
+    
     node = NodeInfo(
         id=node_data["id"],
         short_name=node_data.get("short_name", f"Node-{node_data['id']}"),
@@ -113,14 +133,16 @@ async def handle_node_info(data: Dict):
         role=node_data.get("role", "CLIENT"),
         battery_level=node_data.get("battery_level"),
         voltage=node_data.get("voltage"),
-        rssi=data.get("rssi"),
+        rssi=rssi,
         snr=data.get("snr"),
         hop_count=data.get("hop_count", 0),
+        signal_quality=signal_quality,
         last_heard=data["timestamp"]
     )
     
     # Update live state
     state.live_nodes[node.id] = node
+    logger.info(f"   ✅ Added to live_nodes: {node.id[:8]}, total nodes: {len(state.live_nodes)}")
     
     # Save to database
     await state.db.upsert_node(node)
@@ -150,6 +172,7 @@ async def handle_text_message(data: Dict):
 async def handle_position_update(data: Dict):
     """Handle position update"""
     node_id = data["node_id"]
+    logger.info(f"   Processing position: {node_id[:8]} lat={data.get('latitude')}, lon={data.get('longitude')}")
     
     # Update node position if it exists
     if node_id in state.live_nodes:
@@ -157,13 +180,17 @@ async def handle_position_update(data: Dict):
         state.live_nodes[node_id].longitude = data.get("longitude")
         state.live_nodes[node_id].altitude = data.get("altitude")
         state.live_nodes[node_id].last_heard = data["timestamp"]
+        logger.info(f"   ✅ Updated position for existing node: {node_id[:8]}")
         
         await state.db.upsert_node(state.live_nodes[node_id])
+    else:
+        logger.info(f"   ⚠️ Position update for unknown node: {node_id[:8]} - ignoring")
 
 async def handle_telemetry(data: Dict):
     """Handle telemetry update"""
     node_id = data["node_id"]
     device_metrics = data.get("device_metrics", {})
+    logger.info(f"   Processing telemetry: {node_id[:8]} battery={device_metrics.get('batteryLevel')}%")
     
     # Update node telemetry if it exists
     if node_id in state.live_nodes:
@@ -172,17 +199,56 @@ async def handle_telemetry(data: Dict):
         node.voltage = device_metrics.get("voltage")
         node.last_heard = data["timestamp"]
         
+        # Update hop count and signal info if available
+        if data.get("hop_count") is not None:
+            node.hop_count = data.get("hop_count")
+        if data.get("rssi") is not None:
+            node.rssi = data.get("rssi")
+            # Recalculate signal quality
+            if node.rssi > -75:
+                node.signal_quality = "excellent"
+            elif node.rssi > -85:
+                node.signal_quality = "good"
+            elif node.rssi > -95:
+                node.signal_quality = "weak"
+            else:
+                node.signal_quality = "poor"
+        if data.get("snr") is not None:
+            node.snr = data.get("snr")
+            
+        logger.info(f"   ✅ Updated existing node: {node_id[:8]}")
+        
         await state.db.upsert_node(node)
     else:
-        # Create minimal node entry
+        # Create minimal node entry with hop count and signal info
+        logger.info(f"   ⚠️ Creating new node from telemetry: {node_id[:8]}")
+        
+        # Calculate signal quality based on RSSI
+        rssi = data.get("rssi")
+        signal_quality = None
+        if rssi:
+            if rssi > -75:
+                signal_quality = "excellent"
+            elif rssi > -85:
+                signal_quality = "good"
+            elif rssi > -95:
+                signal_quality = "weak"
+            else:
+                signal_quality = "poor"
+        
         node = NodeInfo(
             id=node_id,
-            short_name=f"Node-{node_id}",
+            short_name=f"Node-{node_id[:8]}",
             battery_level=device_metrics.get("batteryLevel"),
             voltage=device_metrics.get("voltage"),
+            rssi=rssi,
+            snr=data.get("snr"),
+            hop_count=data.get("hop_count", 999),  # Use 999 for unknown
+            signal_quality=signal_quality,
             last_heard=data["timestamp"]
         )
         state.live_nodes[node_id] = node
+        logger.info(f"   ✅ Added to live_nodes: {node_id[:8]}, total nodes: {len(state.live_nodes)}")
         await state.db.upsert_node(node)
 
 async def handle_network_link(data: Dict):
@@ -253,6 +319,7 @@ async def websocket_endpoint(websocket: WebSocket):
     
     try:
         # Send initial state to new client
+        logger.info(f"📱 New WebSocket client connected. Sending initial state with {len(state.live_nodes)} nodes")
         initial_data = {
             "type": "initial_state",
             "data": {
@@ -263,6 +330,7 @@ async def websocket_endpoint(websocket: WebSocket):
             },
             "timestamp": datetime.now()
         }
+        logger.info(f"   Nodes in initial state: {[node.id[:8] for node in state.live_nodes.values()]}")
         await websocket.send_text(json.dumps(initial_data, default=str))
         
         # Keep connection alive and handle incoming messages
@@ -288,7 +356,8 @@ async def websocket_endpoint(websocket: WebSocket):
                     state.meshtastic.request_position(node_id)
                     
     except WebSocketDisconnect:
-        state.websocket_clients.remove(websocket)
+        if websocket in state.websocket_clients:
+            state.websocket_clients.remove(websocket)
     except Exception as e:
         logger.error(f"WebSocket error: {e}")
         if websocket in state.websocket_clients:
@@ -330,6 +399,7 @@ async def start_new_session():
 @app.get("/api/nodes")
 async def get_nodes(active_only: bool = True, since_seconds: int = 300):
     """Get nodes from current session"""
+    logger.info(f"📊 API request for nodes. Live nodes in memory: {len(state.live_nodes)}")
     if active_only:
         nodes = await state.db.get_active_nodes(since_seconds)
     else:
